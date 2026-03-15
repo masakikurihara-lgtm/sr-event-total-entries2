@@ -39,13 +39,8 @@ def ftp_upload(file_path, content_bytes):
         with io.BytesIO(content_bytes) as f:
             ftp.storbinary(f"STOR {file_path}", f)
 
-# --- 更新処理ロジック (引数で対象を制御) ---
+# --- 更新処理ロジック ---
 def run_entries_sync(target_mode="recent"):
-    """
-    target_mode: 
-      - "all": CSV内の全件をAPIと照合して更新
-      - "recent": status 1, 3, 4 のイベントのみAPIから取得して更新
-    """
     st.info(f"📡 {target_mode} モードで同期を開始します...")
     csv_str = ftp_download(CSV_PATH_FTP)
     if not csv_str:
@@ -54,7 +49,6 @@ def run_entries_sync(target_mode="recent"):
 
     df = pd.read_csv(io.StringIO(csv_str))
     
-    # 同期対象のイベントIDリストを作成
     if target_mode == "recent":
         sync_ids = []
         for s in [1, 3, 4]:
@@ -62,7 +56,7 @@ def run_entries_sync(target_mode="recent"):
                 res = requests.get(f"{API_EVENT_SEARCH_URL}?status={s}", headers=HEADERS, timeout=5).json()
                 sync_ids.extend([ev.get("event_id") for ev in res.get("event_list", [])])
             except: continue
-        sync_ids = list(set(sync_ids)) # 重複排除
+        sync_ids = list(set(sync_ids))
     else:
         sync_ids = df['event_id'].tolist()
 
@@ -79,7 +73,6 @@ def run_entries_sync(target_mode="recent"):
             res = requests.get(f"{API_EVENT_ROOM_LIST_URL}?event_id={eid}&p=1", headers=HEADERS, timeout=5).json()
             latest = int(res.get("total_entries", 0))
             
-            # CSV内の該当行を更新
             idx = df.index[df['event_id'] == int(eid)]
             if not idx.empty:
                 current = df.at[idx[0], 'total_entries']
@@ -91,10 +84,9 @@ def run_entries_sync(target_mode="recent"):
             time.sleep(0.05)
         except: continue
     
-    # FTPへアップロード
     csv_bytes = df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
     ftp_upload(CSV_PATH_FTP, csv_bytes)
-    st.success(f"✅ 同期完了！ {update_count} 件の数値を更新・保存しました。")
+    st.success(f"✅ 同期完了！ {update_count} 件更新しました。")
     st.cache_data.clear()
 
 # --- データ読み込み ---
@@ -104,11 +96,14 @@ def load_data():
     if not csv_str: return pd.DataFrame()
     df = pd.read_csv(io.StringIO(csv_str))
     
+    # 実際の日時を保持
     df['start_dt'] = pd.to_datetime(df['started_at'], unit='s', utc=True).dt.tz_convert(JST)
     df['end_dt'] = pd.to_datetime(df['ended_at'], unit='s', utc=True).dt.tz_convert(JST)
+    # グラフのX軸用に「日付のみ」の列を作成
+    df['start_date_only'] = df['start_dt'].dt.normalize() 
+    
     df['duration_days'] = (df['ended_at'] - df['started_at']) / 86400
     df['day_of_week'] = df['start_dt'].dt.day_name()
-    df['week_start'] = df['start_dt'].dt.to_period('W').dt.start_time
     df['total_entries'] = pd.to_numeric(df['total_entries'], errors='coerce').fillna(0).astype(int)
     df['scope_label'] = df['is_entry_scope_inner'].map({True: "対象者限定", False: "全ライバー"})
     
@@ -118,14 +113,13 @@ def load_data():
 st.set_page_config(layout="wide", page_title="SR市場動向分析")
 st.title("📊 SHOWROOM 市場動向分析")
 
-# 制御用メンテナンスパネル
 with st.expander("🛠️ 参加ルーム数の更新・同期設定"):
     col_a, col_b = st.columns(2)
     with col_a:
         if st.button("直近イベント(status 1,3,4)のみ最新化"):
             run_entries_sync(target_mode="recent")
     with col_b:
-        if st.button("CSV全件を最新化 (時間がかかります)"):
+        if st.button("CSV全件を最新化"):
             run_entries_sync(target_mode="all")
 
 st.divider()
@@ -135,7 +129,7 @@ if df_raw.empty:
     st.error("データの読み込みに失敗しました。")
     st.stop()
 
-# --- フィルター (デフォルト値設定) ---
+# --- フィルター ---
 with st.sidebar:
     st.header("分析フィルター")
     today = datetime.now(JST).date()
@@ -146,13 +140,13 @@ with st.sidebar:
     sel_durations = st.multiselect("イベント期間", list(dur_map.keys()) + ["その他"], default=["1週間"])
     sel_days = st.multiselect("開始曜日", ["Monday", "Thursday", "Tuesday", "Wednesday", "Friday", "Saturday", "Sunday"], default=["Monday"])
 
-# フィルタリング適用
-start_date = date_range[0]
-end_date = date_range[1] if len(date_range) > 1 else start_date
+# フィルタリング
+start_date_filter = date_range[0]
+end_date_filter = date_range[1] if len(date_range) > 1 else start_date_filter
 
 df_f = df_raw[
-    (df_raw['start_dt'].dt.date >= start_date) & 
-    (df_raw['start_dt'].dt.date <= end_date) &
+    (df_raw['start_dt'].dt.date >= start_date_filter) & 
+    (df_raw['start_dt'].dt.date <= end_date_filter) &
     (df_raw['scope_label'].isin(sel_targets)) &
     (df_raw['day_of_week'].isin(sel_days))
 ].copy()
@@ -168,18 +162,40 @@ def check_dur(d):
 
 df_f = df_f[df_f['duration_days'].apply(check_dur)]
 
-# --- メインコンテンツ表示 ---
+# --- 可視化 ---
 if not df_f.empty:
     c1, c2, c3 = st.columns(3)
     c1.metric("対象イベント数", f"{len(df_f)}件")
     c2.metric("累計参加ルーム数", f"{df_f['total_entries'].sum():,}延べ")
     c3.metric("1イベント平均", f"{df_f['total_entries'].mean():.1f}人")
 
-    # 二軸グラフ
-    summary = df_f.groupby('week_start').agg(rooms=('total_entries', 'sum'), events=('event_id', 'count')).reset_index()
-    base = alt.Chart(summary).encode(x=alt.X('week_start:T', title='週 (開始日)'))
-    bar = base.mark_bar(opacity=0.3, color='gray').encode(y=alt.Y('events:Q', title='イベント数'))
-    line = base.mark_line(point=True, color='#FF4B4B').encode(y=alt.Y('rooms:Q', title='参加ルーム総数'), tooltip=['week_start', 'rooms', 'events'])
+    # X軸を「正確な開始日」にするための集計
+    summary = df_f.groupby('start_date_only').agg(
+        rooms=('total_entries', 'sum'),
+        events=('event_id', 'count')
+    ).reset_index()
+
+    # 日本語ツールチップの設定
+    tooltip_content = [
+        alt.Tooltip('start_date_only:T', title='開始日'),
+        alt.Tooltip('rooms:Q', title='参加ルーム総数'),
+        alt.Tooltip('events:Q', title='イベント数')
+    ]
+
+    base = alt.Chart(summary).encode(
+        x=alt.X('start_date_only:T', title='イベント開始日')
+    )
+    
+    bar = base.mark_bar(opacity=0.3, color='gray').encode(
+        y=alt.Y('events:Q', title='イベント数'),
+        tooltip=tooltip_content
+    )
+    
+    line = base.mark_line(point=True, color='#FF4B4B').encode(
+        y=alt.Y('rooms:Q', title='参加ルーム総数'),
+        tooltip=tooltip_content
+    )
+    
     st.altair_chart((bar + line).resolve_scale(y='independent'), use_container_width=True)
 
     # テーブル表示
@@ -196,7 +212,7 @@ if not df_f.empty:
         df_final,
         column_config={
             "event_name": st.column_config.TextColumn("イベント名", width="large"),
-            "event_link": st.column_config.LinkColumn("公式ページ", display_text="開く"),
+            "event_link": st.column_config.LinkColumn("イベントページ", display_text="開く"),
             "event_id_str": "イベントID",
             "scope_label": "対象",
             "start_fmt": "開始",
