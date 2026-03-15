@@ -121,7 +121,7 @@ with st.expander("🛠️ 参加ルーム数の更新・同期設定"):
         if st.button("直近イベントのみ最新化"):
             run_entries_sync(target_mode="recent")
     with col_b:
-        if st.button("CSV全件を最新化"):
+        if st.button("全件を最新化"):
             run_entries_sync(target_mode="all")
 
 st.divider()
