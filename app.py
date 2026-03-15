@@ -111,13 +111,14 @@ def load_data():
     return df
 
 # --- UI設定 ---
-st.set_page_config(layout="wide", page_title="SR市場動向分析")
-st.title("📊 SHOWROOM 市場動向分析")
+st.set_page_config(layout="wide", page_title="SRイベント動向分析")
+st.title("📊 SHOWROOM イベント動向分析")
 
 with st.expander("🛠️ 参加ルーム数の更新・同期設定"):
     col_a, col_b = st.columns(2)
     with col_a:
-        if st.button("直近イベント(status 1,3,4)のみ最新化"):
+        # if st.button("直近イベント(status 1,3,4)のみ最新化"):
+        if st.button("直近イベントのみ最新化"):
             run_entries_sync(target_mode="recent")
     with col_b:
         if st.button("CSV全件を最新化"):
