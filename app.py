@@ -96,11 +96,12 @@ def load_data():
     if not csv_str: return pd.DataFrame()
     df = pd.read_csv(io.StringIO(csv_str))
     
-    # 実際の日時を保持
     df['start_dt'] = pd.to_datetime(df['started_at'], unit='s', utc=True).dt.tz_convert(JST)
     df['end_dt'] = pd.to_datetime(df['ended_at'], unit='s', utc=True).dt.tz_convert(JST)
-    # グラフのX軸用に「日付のみ」の列を作成
     df['start_date_only'] = df['start_dt'].dt.normalize() 
+    
+    # 統計用の「週」列（月曜日基準）
+    df['week_commencing'] = df['start_dt'].dt.to_period('W-MON').dt.start_time
     
     df['duration_days'] = (df['ended_at'] - df['started_at']) / 86400
     df['day_of_week'] = df['start_dt'].dt.day_name()
@@ -162,39 +163,37 @@ def check_dur(d):
 
 df_f = df_f[df_f['duration_days'].apply(check_dur)]
 
-# --- 可視化 ---
+# --- 可視化と統計指標 ---
 if not df_f.empty:
-    c1, c2, c3 = st.columns(3)
-    c1.metric("対象イベント数", f"{len(df_f)}件")
-    c2.metric("累計参加ルーム数", f"{df_f['total_entries'].sum():,}延べ")
-    c3.metric("1イベント平均", f"{df_f['total_entries'].mean():.1f}人")
+    # 週単位の集計データを算出
+    weekly_stats = df_f.groupby('week_commencing').agg(
+        event_count=('event_id', 'count'),
+        total_rooms=('total_entries', 'sum')
+    )
+    
+    avg_events_per_week = weekly_stats['event_count'].mean()
+    avg_rooms_per_week = weekly_stats['total_rooms'].mean()
 
-    # X軸を「正確な開始日」にするための集計
+    c1, c2, c3 = st.columns(3)
+    c1.metric("対象イベント総数", f"{len(df_f)}件")
+    c2.metric("平均開催イベント数 / 週", f"{avg_events_per_week:.1f}件")
+    c3.metric("平均参加ルーム数 / 週", f"{avg_rooms_per_week:.1f}ルーム")
+
+    # グラフ用集計
     summary = df_f.groupby('start_date_only').agg(
         rooms=('total_entries', 'sum'),
         events=('event_id', 'count')
     ).reset_index()
 
-    # 日本語ツールチップの設定
     tooltip_content = [
         alt.Tooltip('start_date_only:T', title='開始日'),
         alt.Tooltip('rooms:Q', title='参加ルーム総数'),
         alt.Tooltip('events:Q', title='イベント数')
     ]
 
-    base = alt.Chart(summary).encode(
-        x=alt.X('start_date_only:T', title='イベント開始日')
-    )
-    
-    bar = base.mark_bar(opacity=0.3, color='gray').encode(
-        y=alt.Y('events:Q', title='イベント数'),
-        tooltip=tooltip_content
-    )
-    
-    line = base.mark_line(point=True, color='#FF4B4B').encode(
-        y=alt.Y('rooms:Q', title='参加ルーム総数'),
-        tooltip=tooltip_content
-    )
+    base = alt.Chart(summary).encode(x=alt.X('start_date_only:T', title='イベント開始日'))
+    bar = base.mark_bar(opacity=0.3, color='gray').encode(y=alt.Y('events:Q', title='イベント数'), tooltip=tooltip_content)
+    line = base.mark_line(point=True, color='#FF4B4B').encode(y=alt.Y('rooms:Q', title='参加ルーム総数'), tooltip=tooltip_content)
     
     st.altair_chart((bar + line).resolve_scale(y='independent'), use_container_width=True)
 
@@ -212,7 +211,7 @@ if not df_f.empty:
         df_final,
         column_config={
             "event_name": st.column_config.TextColumn("イベント名", width="large"),
-            "event_link": st.column_config.LinkColumn("イベントページ", display_text="開く"),
+            "event_link": st.column_config.LinkColumn("リンク", display_text="開く"),
             "event_id_str": "イベントID",
             "scope_label": "対象",
             "start_fmt": "開始",
